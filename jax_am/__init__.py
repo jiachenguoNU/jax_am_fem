@@ -1,4 +1,4 @@
-"""JAX-AM 
+"""JAX-AM
 
 Description
 -----------
@@ -27,5 +27,9 @@ Contact
 # TODO: public API management
 # __all__ = ()
 
-__version__ = "0.0.3"
+from .logger_setup import setup_logger
+# LOGGING
+logger = setup_logger(__name__)
 
+
+__version__ = "0.0.3"

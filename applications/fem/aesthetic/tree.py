@@ -1,5 +1,3 @@
-"""Not quite working
-"""
 import sys
 sys.path.append("../../..")
 
@@ -21,6 +19,7 @@ from jax_am.common import rectangle_mesh
 from applications.fem.aesthetic.style_loss import style_transfer
 from applications.fem.aesthetic.arguments import args, bcolors
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 class Elasticity(FEM):
     def custom_init(self):
@@ -74,8 +73,10 @@ class Elasticity(FEM):
         val = np.sum(traction * u_face * nanson_scale[:, :, None])
         return val
 
+problem_name = 'tree'
 data_path = args.output_path
-files_vtk = glob.glob(os.path.join(data_path, f'vtk/*'))
+vtk_path = os.path.join(data_path, f'vtk/{problem_name}')
+files_vtk = glob.glob(os.path.join(vtk_path, f'*'))
 files_jpg = glob.glob(os.path.join(data_path, f'jpg/*'))
 for f in files_vtk + files_jpg:
     os.remove(f)
@@ -117,61 +118,43 @@ def J_total(params):
     return compliance
 
 outputs = []
-def output_sol(params, obj_val):
+def output_sol(params, obj_val, mode):
     print(f"\nOutput solution - need to solve the forward problem again...")
     sol = fwd_pred(params)
-    vtu_path = os.path.join(data_path, f'vtk/sol_{output_sol.counter:03d}.vtu')
+    vtu_path = os.path.join(vtk_path, f'sol_{output_sol.counter:03d}.vtu')
     save_sol(problem, np.hstack((sol, np.zeros((len(sol), 1)))), vtu_path, cell_infos=[('theta', 1. - problem.full_params[:, 0])])
-    print(f"{bcolors.HEADER}compliance = {obj_val}{bcolors.ENDC}")
+    print(f"{bcolors.HEADER}Case = {problem_name}, Mode = {mode}, compliance = {obj_val}{bcolors.ENDC}")
     outputs.append(obj_val)
     output_sol.counter += 1
 output_sol.counter = 0
 
 vf = 0.3
 rho_ini = vf*np.ones((len(problem.flex_inds), 1))
-optimizationParams = {'maxIters':201, 'movelimit':0.1}
-numConstraints = 2
+numConstraints = 1
 
 config.update("jax_enable_x64", False)
-style_value_and_grad, initial_loss = style_transfer(problem, rho_ini)
+style_value_and_grad, initial_loss = style_transfer(problem, rho_ini, image_path='styles/circles_ppt_made.png', reverse=True)
 config.update("jax_enable_x64", True)
 
  
-# def objectiveHandle(rho):
-#     """MMA solver requires (J, dJ) as inputs
-#     J has shape ()
-#     dJ has shape (...) = rho.shape
-#     """
-#     J_to, dJ_to = jax.value_and_grad(J_total)(rho)
-#     J_style, dJ_style = style_value_and_grad(rho, output_sol.counter)
-
-#     J = J_to + J_style
-#     dJ = dJ_to + dJ_style
-
-#     output_sol(rho, J_to)
-#     return J, dJ
-
-# def consHandle(rho, epoch):
-#     """MMA solver requires (c, dc) as inputs
-#     c should have shape (numConstraints,)
-#     gradc should have shape (numConstraints, ...)
-#     """
-#     def computeGlobalVolumeConstraint(rho):
-#         g = np.mean(rho)/vf - 1.
-#         return g
-#     c, gradc = jax.value_and_grad(computeGlobalVolumeConstraint)(rho)
-#     c, gradc = c.reshape((1,)), gradc[None, ...]
-#     return c, gradc
-
-
-def objectiveHandle(rho):
+def objectiveHandleCompliance(rho):
     """MMA solver requires (J, dJ) as inputs
     J has shape ()
     dJ has shape (...) = rho.shape
     """
     J_to, dJ_to = jax.value_and_grad(J_total)(rho)
-    output_sol(rho, J_to)
+    output_sol(rho, J_to, 'compliance')
     return J_to, dJ_to
+
+def objectiveHandleStyle(rho):
+    """MMA solver requires (J, dJ) as inputs
+    J has shape ()
+    dJ has shape (...) = rho.shape
+    """
+    J_style, dJ_style = style_value_and_grad(rho, output_sol.counter)
+    output_sol(rho, J_style, 'style')
+    return J_style, dJ_style
+
 
 def consHandle(rho, epoch):
     """MMA solver requires (c, dc) as inputs
@@ -181,36 +164,23 @@ def consHandle(rho, epoch):
     def computeGlobalVolumeConstraint(rho):
         g = np.mean(rho)/vf - 1.
         return g
-
-    s_ratio = np.maximum(2./3., 1. - epoch/100.)
-    print(f"s_ratio = {s_ratio}")
-    s_max = s_ratio * initial_loss
-
-    Js, dJ_s = style_value_and_grad(rho, output_sol.counter)
-
-
-
-
-    cs, gradc_s = Js/s_max - 1, dJ_s/s_max
-
-    if (epoch // 10) % 2 == 0:
-        cs = np.zeros_like(cs)
-        gradc_s = np.zeros_like(gradc_s)
-    
-    cv, gradc_v = jax.value_and_grad(computeGlobalVolumeConstraint)(rho)
-
-    c, gradc = np.array([cv, cs]), np.stack((gradc_v, gradc_s), axis=0)
+    c, gradc = jax.value_and_grad(computeGlobalVolumeConstraint)(rho)
+    c, gradc = c.reshape((1,)), gradc[None, ...]
     return c, gradc
 
 
-optimize(problem, rho_ini, optimizationParams, objectiveHandle, consHandle, numConstraints)
+optimizationParamsCompliance = {'maxIters':5, 'movelimit':0.1}
+optimizationParamsStyle = {'maxIters':10, 'movelimit':0.1}
+
+rho = rho_ini
+for i in range(3):
+    rho = optimize(problem, rho, optimizationParamsCompliance, objectiveHandleCompliance, consHandle, numConstraints)
+    # rho = optimize(problem, rho, optimizationParamsStyle, objectiveHandleStyle, consHandle, numConstraints)
+
+for i in range(10):
+    rho = optimize(problem, rho, {'maxIters':10, 'movelimit':0.05}, objectiveHandleCompliance, consHandle, numConstraints)
+ 
+
 print(f"As a reminder, compliance = {J_total(np.ones((len(problem.flex_inds), 1)))} for full material")
 
-obj = onp.array(outputs)
-plt.figure(figsize=(10, 8))
-plt.plot(onp.arange(len(obj)) + 1, obj, linestyle='-', linewidth=2, color='black')
-plt.xlabel(r"Optimization step", fontsize=20)
-plt.ylabel(r"Objective value", fontsize=20)
-plt.tick_params(labelsize=20)
-plt.tick_params(labelsize=20)
-plt.show()
+ 
