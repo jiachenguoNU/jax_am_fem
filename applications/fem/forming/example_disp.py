@@ -10,6 +10,14 @@ import jax.flatten_util
 import os
 import glob
 import matplotlib.pyplot as plt
+import sys
+
+
+sys.path.append('/home/jgz1751/git/jax_am_fem/jax_am/fem')
+
+
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 from jax_am.fem.core import FEM
 from jax_am.fem.solver import solver, DynamicRelaxSolve
